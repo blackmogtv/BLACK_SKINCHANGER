@@ -19,6 +19,7 @@ This repo contains the `BLACK_SKINCHANGER` Supabase-backed key system with two e
 - Tracks whether a key is currently used
 - Tracks first use, last use, and last validation time
 - Stores recent event history for admin review and a backend activity feed for the website `ACTIVITY_LOG`
+- Logs every validation attempt, including valid logins, wrong keys, product mismatches, bans, expirations, and HWID mismatches with explicit reasons
 
 ## Files That Matter
 

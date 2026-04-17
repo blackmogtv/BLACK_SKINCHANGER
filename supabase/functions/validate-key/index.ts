@@ -165,6 +165,37 @@ async function insertEvent(
   });
 }
 
+async function insertValidationAttempt(
+  supabase: ReturnType<typeof createClient>,
+  payload: {
+    client_id?: string | null;
+    submitted_license_key?: string | null;
+    submitted_key_hash?: string | null;
+    matched_license_key_id?: string | null;
+    is_valid: boolean;
+    reason: string;
+    status_returned: string;
+    hwid?: string | null;
+    hwid_hash?: string | null;
+    user_label?: string | null;
+    metadata?: Record<string, unknown>;
+  },
+) {
+  await supabase.from("validation_attempts").insert({
+    client_id: payload.client_id ?? null,
+    submitted_license_key: payload.submitted_license_key ?? null,
+    submitted_key_hash: payload.submitted_key_hash ?? null,
+    matched_license_key_id: payload.matched_license_key_id ?? null,
+    is_valid: payload.is_valid,
+    reason: payload.reason,
+    status_returned: payload.status_returned,
+    hwid: payload.hwid ?? null,
+    hwid_hash: payload.hwid_hash ?? null,
+    user_label: payload.user_label ?? null,
+    metadata: payload.metadata ?? {},
+  });
+}
+
 function serializeLicenseKey(row: LicenseKeyRow) {
   const status = derivedStatus(row);
   const duration = durationFromRow(row);
@@ -235,6 +266,7 @@ Deno.serve(async (req) => {
   const supabase = createClient(supabaseUrl, serviceRoleKey, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
+  const now = new Date().toISOString();
 
   const { data: product, error: productError } = await supabase
     .from("products")
@@ -247,6 +279,16 @@ Deno.serve(async (req) => {
   }
 
   if (!product || !product.is_active) {
+    await insertValidationAttempt(supabase, {
+      client_id: clientId,
+      submitted_license_key: licenseKey,
+      is_valid: false,
+      reason: product ? "inactive_product" : "unknown_product",
+      status_returned: "invalid_product",
+      hwid,
+      user_label: userLabel || null,
+      metadata: { used_at: now },
+    });
     return jsonResponse({ status: "invalid_product", message: "Unknown or inactive product" }, 200);
   }
 
@@ -265,10 +307,20 @@ Deno.serve(async (req) => {
   }
 
   if (!row) {
+    await insertValidationAttempt(supabase, {
+      client_id: clientId,
+      submitted_license_key: licenseKey,
+      submitted_key_hash: keyHash,
+      is_valid: false,
+      reason: "invalid_key",
+      status_returned: "invalid",
+      hwid,
+      hwid_hash: hwidHash,
+      user_label: userLabel || null,
+      metadata: { used_at: now },
+    });
     return jsonResponse({ status: "invalid", message: "Invalid license key" }, 200);
   }
-
-  const now = new Date().toISOString();
 
   if (row.status === "banned") {
     await insertEvent(supabase, row.id, "validation_rejected", "client", {
@@ -276,6 +328,19 @@ Deno.serve(async (req) => {
       hwid,
       user_label: userLabel || null,
       used_at: now,
+    });
+    await insertValidationAttempt(supabase, {
+      client_id: clientId,
+      submitted_license_key: licenseKey,
+      submitted_key_hash: keyHash,
+      matched_license_key_id: row.id,
+      is_valid: false,
+      reason: "banned",
+      status_returned: "banned",
+      hwid,
+      hwid_hash: hwidHash,
+      user_label: userLabel || null,
+      metadata: { used_at: now },
     });
 
     return jsonResponse({ status: "banned", message: "This key has been banned" }, 200);
@@ -288,6 +353,19 @@ Deno.serve(async (req) => {
       user_label: userLabel || null,
       used_at: now,
     });
+    await insertValidationAttempt(supabase, {
+      client_id: clientId,
+      submitted_license_key: licenseKey,
+      submitted_key_hash: keyHash,
+      matched_license_key_id: row.id,
+      is_valid: false,
+      reason: "expired",
+      status_returned: "expired",
+      hwid,
+      hwid_hash: hwidHash,
+      user_label: userLabel || null,
+      metadata: { used_at: now },
+    });
 
     return jsonResponse({ status: "expired", message: "This key has expired" }, 200);
   }
@@ -299,6 +377,19 @@ Deno.serve(async (req) => {
       user_label: userLabel || null,
       used_at: now,
     });
+    await insertValidationAttempt(supabase, {
+      client_id: clientId,
+      submitted_license_key: licenseKey,
+      submitted_key_hash: keyHash,
+      matched_license_key_id: row.id,
+      is_valid: false,
+      reason: "hwid_mismatch",
+      status_returned: "hwid_mismatch",
+      hwid,
+      hwid_hash: hwidHash,
+      user_label: userLabel || null,
+      metadata: { used_at: now, bound_hwid: row.bound_hwid },
+    });
 
     return jsonResponse(
       { status: "hwid_mismatch", message: "Key is locked to another device" },
@@ -308,6 +399,19 @@ Deno.serve(async (req) => {
 
   if (!row.bound_hwid_hash) {
     if (!bindOnFirstUse) {
+      await insertValidationAttempt(supabase, {
+        client_id: clientId,
+        submitted_license_key: licenseKey,
+        submitted_key_hash: keyHash,
+        matched_license_key_id: row.id,
+        is_valid: true,
+        reason: "valid_unbound",
+        status_returned: "valid",
+        hwid,
+        hwid_hash: hwidHash,
+        user_label: userLabel || null,
+        metadata: { used_at: now, bound_now: false },
+      });
       return jsonResponse(
         {
           status: "valid",
@@ -345,6 +449,19 @@ Deno.serve(async (req) => {
         used_at: now,
         last_used_at: boundRow.last_used_at,
       });
+      await insertValidationAttempt(supabase, {
+        client_id: clientId,
+        submitted_license_key: licenseKey,
+        submitted_key_hash: keyHash,
+        matched_license_key_id: row.id,
+        is_valid: true,
+        reason: "valid_bound",
+        status_returned: "valid",
+        hwid,
+        hwid_hash: hwidHash,
+        user_label: userLabel || null,
+        metadata: { used_at: now, last_used_at: boundRow.last_used_at, bound_now: true },
+      });
 
       return jsonResponse(
         {
@@ -368,6 +485,19 @@ Deno.serve(async (req) => {
     }
 
     if (rebound.bound_hwid_hash !== hwidHash) {
+      await insertValidationAttempt(supabase, {
+        client_id: clientId,
+        submitted_license_key: licenseKey,
+        submitted_key_hash: keyHash,
+        matched_license_key_id: row.id,
+        is_valid: false,
+        reason: "hwid_mismatch",
+        status_returned: "hwid_mismatch",
+        hwid,
+        hwid_hash: hwidHash,
+        user_label: userLabel || null,
+        metadata: { used_at: now, rebound: true, bound_hwid: rebound.bound_hwid },
+      });
       return jsonResponse(
         { status: "hwid_mismatch", message: "Key is locked to another device" },
         200,
@@ -380,6 +510,19 @@ Deno.serve(async (req) => {
       rebound: true,
       used_at: now,
       last_used_at: rebound.last_used_at,
+    });
+    await insertValidationAttempt(supabase, {
+      client_id: clientId,
+      submitted_license_key: licenseKey,
+      submitted_key_hash: keyHash,
+      matched_license_key_id: row.id,
+      is_valid: true,
+      reason: "valid_rebound",
+      status_returned: "valid",
+      hwid,
+      hwid_hash: hwidHash,
+      user_label: userLabel || null,
+      metadata: { used_at: now, last_used_at: rebound.last_used_at, rebound: true },
     });
 
     return jsonResponse(
@@ -417,6 +560,19 @@ Deno.serve(async (req) => {
     user_label: userLabel || null,
     used_at: now,
     last_used_at: (updatedRows[0] as LicenseKeyRow).last_used_at,
+  });
+  await insertValidationAttempt(supabase, {
+    client_id: clientId,
+    submitted_license_key: licenseKey,
+    submitted_key_hash: keyHash,
+    matched_license_key_id: row.id,
+    is_valid: true,
+    reason: "valid_existing_binding",
+    status_returned: "valid",
+    hwid,
+    hwid_hash: hwidHash,
+    user_label: userLabel || null,
+    metadata: { used_at: now, last_used_at: (updatedRows[0] as LicenseKeyRow).last_used_at },
   });
 
   return jsonResponse(

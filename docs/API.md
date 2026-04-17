@@ -207,6 +207,24 @@ List recent activity across all products or one product:
 }
 ```
 
+`list_activity` now includes:
+
+- management/key lifecycle events such as `created`, `banned`, `unbanned`, `note_updated`, `duration_updated`
+- validation attempts as `validation_success` or `validation_failed`
+
+Every validation attempt includes a normalized `reason` in `details`, for example:
+
+- `invalid_key`
+- `unknown_product`
+- `inactive_product`
+- `hwid_mismatch`
+- `expired`
+- `banned`
+- `valid_bound`
+- `valid_existing_binding`
+- `valid_rebound`
+- `valid_unbound`
+
 Optional product filter:
 
 ```json

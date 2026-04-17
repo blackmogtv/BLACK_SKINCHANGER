@@ -53,6 +53,21 @@ type LicenseKeyEventRow = {
   license_key: ActivityKeyRef | ActivityKeyRef[] | null;
 };
 
+type ValidationAttemptRow = {
+  id: string;
+  client_id: string | null;
+  submitted_license_key: string | null;
+  matched_license_key_id: string | null;
+  is_valid: boolean;
+  reason: string;
+  status_returned: string;
+  hwid: string | null;
+  user_label: string | null;
+  created_at: string;
+  metadata: Record<string, unknown>;
+  license_key: ActivityKeyRef | ActivityKeyRef[] | null;
+};
+
 type DurationUnit = "hours" | "days" | "weeks" | "months" | "years";
 type DurationInputUnit = DurationUnit | "lifetime";
 
@@ -149,6 +164,21 @@ const activitySelectColumns = [
   "details",
   "created_at",
   "license_key:license_keys!inner(client_id,license_key,bound_hwid,bound_user_label,last_used_at)",
+].join(",");
+
+const validationAttemptSelectColumns = [
+  "id",
+  "client_id",
+  "submitted_license_key",
+  "matched_license_key_id",
+  "is_valid",
+  "reason",
+  "status_returned",
+  "hwid",
+  "user_label",
+  "created_at",
+  "metadata",
+  "license_key:license_keys(client_id,license_key,bound_hwid,bound_user_label,last_used_at)",
 ].join(",");
 
 const keyAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -429,6 +459,31 @@ function serializeActivityEvent(row: LicenseKeyEventRow) {
   };
 }
 
+function serializeValidationAttempt(row: ValidationAttemptRow) {
+  const keyRef = coerceActivityKeyRef(row.license_key);
+  const usedAt = detailString(row.metadata, "used_at") ?? row.created_at;
+
+  return {
+    id: row.id,
+    license_key_id: row.matched_license_key_id,
+    client_id: row.client_id ?? keyRef?.client_id ?? null,
+    license_key: row.submitted_license_key ?? keyRef?.license_key ?? null,
+    event_type: row.is_valid ? "validation_success" : "validation_failed",
+    actor: row.user_label ?? detailString(row.metadata, "user_label"),
+    created_at: row.created_at,
+    used_at: usedAt,
+    last_used_at: row.is_valid ? (detailString(row.metadata, "last_used_at") ?? usedAt) : null,
+    hwid: row.hwid ?? detailString(row.metadata, "hwid") ?? keyRef?.bound_hwid ?? null,
+    user_label: row.user_label ?? detailString(row.metadata, "user_label") ?? keyRef?.bound_user_label ?? null,
+    details: {
+      ...row.metadata,
+      reason: row.reason,
+      status_returned: row.status_returned,
+      is_valid: row.is_valid,
+    },
+  };
+}
+
 function generateLicenseKey() {
   const random = crypto.getRandomValues(new Uint8Array(20));
   const chars = Array.from(random, (value) => keyAlphabet[value % keyAlphabet.length]);
@@ -631,24 +686,47 @@ Deno.serve(async (req) => {
     const limit = Math.min(Math.max(Number(payload.limit ?? 100), 1), 250);
     const offset = Math.max(Number(payload.offset ?? 0), 0);
 
-    let query = supabase
+    let eventQuery = supabase
       .from("license_key_events")
       .select(activitySelectColumns)
       .order("created_at", { ascending: false })
       .range(offset, offset + limit - 1);
 
     if (clientId) {
-      query = query.eq("license_key.client_id", clientId);
+      eventQuery = eventQuery.eq("license_key.client_id", clientId);
     }
 
-    const { data, error } = await query.returns<LicenseKeyEventRow[]>();
-    if (error || !data) {
+    let attemptQuery = supabase
+      .from("validation_attempts")
+      .select(validationAttemptSelectColumns)
+      .order("created_at", { ascending: false })
+      .range(offset, offset + limit - 1);
+
+    if (clientId) {
+      attemptQuery = attemptQuery.eq("client_id", clientId);
+    }
+
+    const [{ data: events, error: eventsError }, { data: attempts, error: attemptsError }] = await Promise.all([
+      eventQuery.returns<LicenseKeyEventRow[]>(),
+      attemptQuery.returns<ValidationAttemptRow[]>(),
+    ]);
+
+    if (eventsError || attemptsError || !events || !attempts) {
       return jsonResponse({ status: "error", message: "Server error" }, 500);
     }
 
+    const combined = [
+      ...events
+        .filter((event) => !["bound", "validated", "validation_rejected"].includes(event.event_type))
+        .map(serializeActivityEvent),
+      ...attempts.map(serializeValidationAttempt),
+    ]
+      .sort((left, right) => new Date(right.created_at).getTime() - new Date(left.created_at).getTime())
+      .slice(0, limit);
+
     return jsonResponse({
       status: "ok",
-      items: data.map(serializeActivityEvent),
+      items: combined,
     });
   }
 
