@@ -19,6 +19,13 @@ type LicenseKeyRow = {
   created_at: string;
 };
 
+type ProductRow = {
+  id: string;
+  client_id: string;
+  display_name: string;
+  is_active: boolean;
+};
+
 type ValidateRequest = {
   client_id?: string;
   license_key?: string;
@@ -191,6 +198,20 @@ Deno.serve(async (req) => {
   const supabase = createClient(supabaseUrl, serviceRoleKey, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
+
+  const { data: product, error: productError } = await supabase
+    .from("products")
+    .select("id,client_id,display_name,is_active")
+    .eq("client_id", clientId)
+    .maybeSingle<ProductRow>();
+
+  if (productError) {
+    return jsonResponse({ status: "error", message: "Server error" }, 500);
+  }
+
+  if (!product || !product.is_active) {
+    return jsonResponse({ status: "invalid_product", message: "Unknown or inactive product" }, 200);
+  }
 
   const keyHash = await sha256Hex(licenseKey);
   const hwidHash = await sha256Hex(hwid);

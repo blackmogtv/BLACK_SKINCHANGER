@@ -23,8 +23,20 @@ type LicenseKeyRow = {
   updated_at: string;
 };
 
+type ProductRow = {
+  id: string;
+  client_id: string;
+  display_name: string;
+  description: string;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
 type ActionRequest = {
   action?:
+    | "list_products"
+    | "create_product"
     | "list_keys"
     | "get_key"
     | "create_keys"
@@ -46,6 +58,10 @@ type ActionRequest = {
   offset?: number;
   only_used?: boolean;
   only_status?: "active" | "banned";
+  display_name?: string;
+  description?: string;
+  is_active?: boolean;
+  only_active?: boolean;
 };
 
 const corsHeaders = {
@@ -75,6 +91,16 @@ const selectColumns = [
   "note",
   "banned_reason",
   "metadata",
+  "created_at",
+  "updated_at",
+].join(",");
+
+const productSelectColumns = [
+  "id",
+  "client_id",
+  "display_name",
+  "description",
+  "is_active",
   "created_at",
   "updated_at",
 ].join(",");
@@ -126,6 +152,18 @@ function durationLabel(durationDays: number | null) {
   }
 
   return `${durationDays} day${durationDays === 1 ? "" : "s"}`;
+}
+
+function serializeProduct(row: ProductRow) {
+  return {
+    id: row.id,
+    client_id: row.client_id,
+    display_name: row.display_name,
+    description: row.description,
+    is_active: row.is_active,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
 }
 
 function serializeKey(row: LicenseKeyRow) {
@@ -271,8 +309,60 @@ Deno.serve(async (req) => {
     return jsonResponse({ status: "error", message: "action is required" }, 400);
   }
 
-  if (!clientId) {
+  if (action !== "list_products" && !clientId) {
     return jsonResponse({ status: "error", message: "client_id is required" }, 400);
+  }
+
+  if (action === "list_products") {
+    let query = supabase
+      .from("products")
+      .select(productSelectColumns)
+      .order("display_name", { ascending: true });
+
+    if (payload.only_active === true) {
+      query = query.eq("is_active", true);
+    } else if (payload.only_active === false) {
+      query = query.eq("is_active", false);
+    }
+
+    const { data, error } = await query.returns<ProductRow[]>();
+    if (error || !data) {
+      return jsonResponse({ status: "error", message: "Server error" }, 500);
+    }
+
+    return jsonResponse({
+      status: "ok",
+      items: data.map(serializeProduct),
+    });
+  }
+
+  if (action === "create_product") {
+    if (!clientId) {
+      return jsonResponse({ status: "error", message: "client_id is required" }, 400);
+    }
+
+    const displayName = normalizeText(String(payload.display_name ?? clientId), 120) || clientId;
+    const description = normalizeText(String(payload.description ?? ""), 500);
+    const isActive = payload.is_active !== false;
+
+    const { data, error } = await supabase
+      .from("products")
+      .upsert({
+        client_id: clientId,
+        display_name: displayName,
+        description,
+        is_active: isActive,
+      }, { onConflict: "client_id" })
+      .select(productSelectColumns);
+
+    if (error || !data || data.length === 0) {
+      return jsonResponse({ status: "error", message: "Failed to create product" }, 500);
+    }
+
+    return jsonResponse({
+      status: "ok",
+      item: serializeProduct(data[0] as ProductRow),
+    });
   }
 
   if (action === "list_keys") {
@@ -342,6 +432,24 @@ Deno.serve(async (req) => {
   }
 
   if (action === "create_keys") {
+    const { data: product, error: productError } = await supabase
+      .from("products")
+      .select(productSelectColumns)
+      .eq("client_id", clientId)
+      .maybeSingle<ProductRow>();
+
+    if (productError) {
+      return jsonResponse({ status: "error", message: "Server error" }, 500);
+    }
+
+    if (!product) {
+      return jsonResponse({ status: "error", message: "Product not found. Create it first." }, 404);
+    }
+
+    if (!product.is_active) {
+      return jsonResponse({ status: "error", message: "Product is inactive" }, 400);
+    }
+
     const quantity = Math.min(Math.max(Number(payload.quantity ?? 1), 1), 100);
     const createdBy = normalizeText(String(payload.created_by ?? actor), 120) || actor;
     const note = normalizeText(String(payload.note ?? ""), 500);

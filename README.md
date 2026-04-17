@@ -10,6 +10,7 @@ This repo contains the `BLACK_SKINCHANGER` Supabase-backed key system with two e
 - Creates human-readable keys in the format `ABCDE-FGHIJ-KLMNO-PQRST`
 - Tracks when a key was created
 - Supports lifetime keys or duration-based expiry in days
+- Stores product records in a `products` table and seeds the three known products
 - Binds a key to an HWID on first successful validation
 - Lets you reset the bound HWID
 - Lets you ban and unban keys
@@ -21,6 +22,7 @@ This repo contains the `BLACK_SKINCHANGER` Supabase-backed key system with two e
 ## Files That Matter
 
 - `supabase/migrations/20260417_create_licenses.sql`
+- `supabase/migrations/20260417_create_products.sql`
 - `supabase/functions/validate-key/index.ts`
 - `supabase/functions/manage-keys/index.ts`
 - `.env.example`
