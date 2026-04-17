@@ -9,7 +9,7 @@ This repo contains the `BLACK_SKINCHANGER` Supabase-backed key system with two e
 
 - Creates human-readable keys in the format `ABCDE-FGHIJ-KLMNO-PQRST`
 - Tracks when a key was created
-- Supports lifetime keys or duration-based expiry in days
+- Supports lifetime keys or exact expiry in hours, days, weeks, months, or years
 - Stores product records in a `products` table and seeds the three known products
 - Binds a key to an HWID on first successful validation
 - Lets you reset the bound HWID

@@ -7,6 +7,8 @@ type LicenseKeyRow = {
   status: "active" | "banned";
   created_by: string | null;
   duration_days: number | null;
+  duration_value: number | null;
+  duration_unit: "hours" | "days" | "weeks" | "months" | "years" | null;
   expires_at: string | null;
   first_used_at: string | null;
   last_used_at: string | null;
@@ -18,6 +20,8 @@ type LicenseKeyRow = {
   banned_reason: string | null;
   created_at: string;
 };
+
+type DurationUnit = "hours" | "days" | "weeks" | "months" | "years";
 
 type ProductRow = {
   id: string;
@@ -49,6 +53,8 @@ const selectColumns = [
   "status",
   "created_by",
   "duration_days",
+  "duration_value",
+  "duration_unit",
   "expires_at",
   "first_used_at",
   "last_used_at",
@@ -80,12 +86,40 @@ function normalizeUserLabel(value: string) {
   return value.trim().slice(0, 120);
 }
 
-function durationLabel(durationDays: number | null) {
-  if (durationDays === null) {
+function durationLabel(durationValue: number | null, durationUnit: DurationUnit | null) {
+  if (durationValue === null || durationUnit === null) {
     return "Lifetime";
   }
 
-  return `${durationDays} day${durationDays === 1 ? "" : "s"}`;
+  return `${durationValue} ${durationUnit.slice(0, -1)}${durationValue === 1 ? "" : "s"}`;
+}
+
+function legacyDurationDays(durationValue: number | null, durationUnit: DurationUnit | null) {
+  if (durationValue === null || durationUnit === null) {
+    return null;
+  }
+
+  if (durationUnit === "days") {
+    return durationValue;
+  }
+
+  if (durationUnit === "weeks") {
+    return durationValue * 7;
+  }
+
+  return null;
+}
+
+function durationFromRow(row: Pick<LicenseKeyRow, "duration_days" | "duration_value" | "duration_unit">) {
+  const durationValue = row.duration_value ?? (row.duration_days ?? null);
+  const durationUnit = row.duration_unit ?? (durationValue !== null ? "days" : null);
+
+  return {
+    duration_value: durationValue,
+    duration_unit: durationUnit ?? "lifetime",
+    duration_days: legacyDurationDays(durationValue, durationUnit),
+    duration_label: durationLabel(durationValue, durationUnit),
+  };
 }
 
 function isExpired(expiresAt: string | null) {
@@ -133,6 +167,7 @@ async function insertEvent(
 
 function serializeLicenseKey(row: LicenseKeyRow) {
   const status = derivedStatus(row);
+  const duration = durationFromRow(row);
 
   return {
     id: row.id,
@@ -141,8 +176,10 @@ function serializeLicenseKey(row: LicenseKeyRow) {
     status,
     created_at: row.created_at,
     created_by: row.created_by,
-    duration_days: row.duration_days,
-    duration_label: durationLabel(row.duration_days),
+    duration_days: duration.duration_days,
+    duration_value: duration.duration_value,
+    duration_unit: duration.duration_unit,
+    duration_label: duration.duration_label,
     expires_at: row.expires_at,
     is_used: Boolean(row.bound_hwid_hash),
     hwid: row.bound_hwid,

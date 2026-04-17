@@ -94,12 +94,27 @@ Create keys:
   "action": "create_keys",
   "client_id": "YOUR_PRODUCT_ID",
   "quantity": 5,
-  "duration_days": 30,
+  "duration_value": 30,
+  "duration_unit": "days",
   "created_by": "YOUR_PRODUCT_ID",
   "note": "March batch",
   "actor": "owner"
 }
 ```
+
+Supported duration units:
+
+- `"hours"`
+- `"days"`
+- `"weeks"`
+- `"months"`
+- `"years"`
+- `"lifetime"` or `null`
+
+Legacy compatibility:
+
+- `duration_days` is still accepted and is treated as `duration_value + duration_unit = "days"`.
+- Lifetime keys can omit all duration fields or send `duration_unit: "lifetime"`.
 
 List keys:
 
@@ -176,7 +191,8 @@ Change duration:
   "action": "set_duration",
   "client_id": "YOUR_PRODUCT_ID",
   "license_key": "ABCDE-FGHIJ-KLMNO-PQRST",
-  "duration_days": 90,
+  "duration_value": 12,
+  "duration_unit": "hours",
   "actor": "owner"
 }
 ```

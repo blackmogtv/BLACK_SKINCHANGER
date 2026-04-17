@@ -7,6 +7,8 @@ type LicenseKeyRow = {
   status: "active" | "banned";
   created_by: string | null;
   duration_days: number | null;
+  duration_value: number | null;
+  duration_unit: "hours" | "days" | "weeks" | "months" | "years" | null;
   expires_at: string | null;
   first_used_at: string | null;
   last_used_at: string | null;
@@ -33,6 +35,9 @@ type ProductRow = {
   updated_at: string;
 };
 
+type DurationUnit = "hours" | "days" | "weeks" | "months" | "years";
+type DurationInputUnit = DurationUnit | "lifetime";
+
 type ActionRequest = {
   action?:
     | "list_products"
@@ -53,6 +58,8 @@ type ActionRequest = {
   created_by?: string;
   note?: string;
   duration_days?: number | null;
+  duration_value?: number | null;
+  duration_unit?: DurationInputUnit | null;
   banned_reason?: string;
   actor?: string;
   limit?: number;
@@ -87,6 +94,8 @@ const selectColumns = [
   "status",
   "created_by",
   "duration_days",
+  "duration_value",
+  "duration_unit",
   "expires_at",
   "first_used_at",
   "last_used_at",
@@ -145,6 +154,149 @@ function isExpired(expiresAt: string | null) {
   return expiresAt !== null && new Date(expiresAt).getTime() <= Date.now();
 }
 
+function pluralizeDuration(unit: DurationUnit, value: number) {
+  return `${value} ${unit.slice(0, -1)}${value === 1 ? "" : "s"}`;
+}
+
+function durationLabel(durationValue: number | null, durationUnit: DurationUnit | null) {
+  if (durationValue === null || durationUnit === null) {
+    return "Lifetime";
+  }
+
+  return pluralizeDuration(durationUnit, durationValue);
+}
+
+function normalizeDurationUnit(value: unknown) {
+  if (value === undefined) {
+    return { value: undefined as DurationInputUnit | null | undefined, valid: true };
+  }
+
+  if (value === null) {
+    return { value: null as DurationInputUnit | null, valid: true };
+  }
+
+  const normalized = String(value).trim().toLowerCase();
+  if (!normalized) {
+    return { value: null as DurationInputUnit | null, valid: true };
+  }
+
+  if (
+    normalized === "lifetime" ||
+    normalized === "hours" ||
+    normalized === "days" ||
+    normalized === "weeks" ||
+    normalized === "months" ||
+    normalized === "years"
+  ) {
+    return { value: normalized as DurationInputUnit, valid: true };
+  }
+
+  return { value: undefined as DurationInputUnit | null | undefined, valid: false };
+}
+
+function legacyDurationDays(durationValue: number | null, durationUnit: DurationUnit | null) {
+  if (durationValue === null || durationUnit === null) {
+    return null;
+  }
+
+  if (durationUnit === "days") {
+    return durationValue;
+  }
+
+  if (durationUnit === "weeks") {
+    return durationValue * 7;
+  }
+
+  return null;
+}
+
+function durationFromRow(row: Pick<LicenseKeyRow, "duration_days" | "duration_value" | "duration_unit">) {
+  const durationValue = row.duration_value ?? (row.duration_days ?? null);
+  const durationUnit = row.duration_unit ?? (durationValue !== null ? "days" : null);
+
+  return {
+    duration_value: durationValue,
+    duration_unit: durationUnit ?? "lifetime",
+    duration_days: legacyDurationDays(durationValue, durationUnit),
+    duration_label: durationLabel(durationValue, durationUnit),
+  };
+}
+
+function parseDurationInput(payload: Pick<ActionRequest, "duration_days" | "duration_value" | "duration_unit">) {
+  const normalizedUnit = normalizeDurationUnit(payload.duration_unit);
+  if (!normalizedUnit.valid) {
+    return {
+      ok: false as const,
+      message: "duration_unit must be one of hours, days, weeks, months, years, lifetime, or null",
+    };
+  }
+
+  const hasDurationValue = payload.duration_value !== undefined;
+  const hasDurationUnit = payload.duration_unit !== undefined;
+  const hasLegacyDurationDays = payload.duration_days !== undefined;
+
+  if (normalizedUnit.value === "lifetime" || payload.duration_value === null) {
+    return {
+      ok: true as const,
+      value: null,
+      unit: null,
+      duration_days: null,
+      label: "Lifetime",
+    };
+  }
+
+  if (hasDurationValue || hasDurationUnit) {
+    if (normalizedUnit.value === null || normalizedUnit.value === undefined) {
+      return {
+        ok: false as const,
+        message: "duration_value and duration_unit are required unless the duration is lifetime",
+      };
+    }
+
+    const durationValue = Number(payload.duration_value);
+    if (!Number.isInteger(durationValue) || durationValue <= 0) {
+      return {
+        ok: false as const,
+        message: "duration_value must be a positive integer",
+      };
+    }
+
+    return {
+      ok: true as const,
+      value: durationValue,
+      unit: normalizedUnit.value as DurationUnit,
+      duration_days: legacyDurationDays(durationValue, normalizedUnit.value as DurationUnit),
+      label: durationLabel(durationValue, normalizedUnit.value as DurationUnit),
+    };
+  }
+
+  if (!hasLegacyDurationDays || payload.duration_days === null) {
+    return {
+      ok: true as const,
+      value: null,
+      unit: null,
+      duration_days: null,
+      label: "Lifetime",
+    };
+  }
+
+  const durationDays = Number(payload.duration_days);
+  if (!Number.isInteger(durationDays) || durationDays <= 0) {
+    return {
+      ok: false as const,
+      message: "duration_days must be a positive integer or null",
+    };
+  }
+
+  return {
+    ok: true as const,
+    value: durationDays,
+    unit: "days" as const,
+    duration_days: durationDays,
+    label: durationLabel(durationDays, "days"),
+  };
+}
+
 function derivedStatus(row: Pick<LicenseKeyRow, "status" | "expires_at" | "bound_hwid_hash">) {
   if (row.status === "banned") {
     return "banned";
@@ -160,15 +312,6 @@ function derivedStatus(row: Pick<LicenseKeyRow, "status" | "expires_at" | "bound
 
   return "unused";
 }
-
-function durationLabel(durationDays: number | null) {
-  if (durationDays === null) {
-    return "Lifetime";
-  }
-
-  return `${durationDays} day${durationDays === 1 ? "" : "s"}`;
-}
-
 function serializeProduct(row: ProductRow) {
   return {
     id: row.id,
@@ -183,6 +326,7 @@ function serializeProduct(row: ProductRow) {
 
 function serializeKey(row: LicenseKeyRow) {
   const status = derivedStatus(row);
+  const duration = durationFromRow(row);
 
   return {
     id: row.id,
@@ -193,8 +337,10 @@ function serializeKey(row: LicenseKeyRow) {
     created_at: row.created_at,
     updated_at: row.updated_at,
     created_by: row.created_by,
-    duration_days: row.duration_days,
-    duration_label: durationLabel(row.duration_days),
+    duration_days: duration.duration_days,
+    duration_value: duration.duration_value,
+    duration_unit: duration.duration_unit,
+    duration_label: duration.duration_label,
     expires_at: row.expires_at,
     note: row.note,
     is_used: Boolean(row.bound_hwid_hash),
@@ -211,7 +357,7 @@ function serializeKey(row: LicenseKeyRow) {
       title: row.license_key,
       status_badge: status.toUpperCase(),
       created: row.created_at,
-      duration: durationLabel(row.duration_days),
+      duration: duration.duration_label,
       generated_by: row.created_by ?? "System",
       used_by: row.bound_user_label ?? null,
       note: row.note || null,
@@ -519,15 +665,9 @@ Deno.serve(async (req) => {
     const quantity = Math.min(Math.max(Number(payload.quantity ?? 1), 1), 100);
     const createdBy = normalizeText(String(payload.created_by ?? actor), 120) || actor;
     const note = normalizeText(String(payload.note ?? ""), 500);
-    const durationDays = payload.duration_days === null || payload.duration_days === undefined
-      ? null
-      : Number(payload.duration_days);
-
-    if (durationDays !== null && (!Number.isInteger(durationDays) || durationDays <= 0)) {
-      return jsonResponse(
-        { status: "error", message: "duration_days must be a positive integer or null" },
-        400,
-      );
+    const duration = parseDurationInput(payload);
+    if (!duration.ok) {
+      return jsonResponse({ status: "error", message: duration.message }, 400);
     }
 
     const rowsToInsert = [];
@@ -538,7 +678,9 @@ Deno.serve(async (req) => {
         license_key: licenseKey,
         key_hash: await sha256Hex(licenseKey),
         created_by: createdBy,
-        duration_days: durationDays,
+        duration_days: duration.duration_days,
+        duration_value: duration.value,
+        duration_unit: duration.unit,
         note,
       });
     }
@@ -555,7 +697,10 @@ Deno.serve(async (req) => {
     for (const row of data as LicenseKeyRow[]) {
       await insertEvent(supabase, row.id, "created", actor, {
         created_by: createdBy,
-        duration_days: durationDays,
+        duration_days: duration.duration_days,
+        duration_value: duration.value,
+        duration_unit: duration.unit,
+        duration_label: duration.label,
         note,
       });
     }
@@ -704,15 +849,9 @@ Deno.serve(async (req) => {
   }
 
   if (action === "set_duration") {
-    const durationDays = payload.duration_days === null || payload.duration_days === undefined
-      ? null
-      : Number(payload.duration_days);
-
-    if (durationDays !== null && (!Number.isInteger(durationDays) || durationDays <= 0)) {
-      return jsonResponse(
-        { status: "error", message: "duration_days must be a positive integer or null" },
-        400,
-      );
+    const duration = parseDurationInput(payload);
+    if (!duration.ok) {
+      return jsonResponse({ status: "error", message: duration.message }, 400);
     }
 
     const { data, error } = await fetchOneKey(
@@ -732,7 +871,11 @@ Deno.serve(async (req) => {
 
     const { data: updatedRows, error: updateError } = await supabase
       .from("license_keys")
-      .update({ duration_days: durationDays })
+      .update({
+        duration_days: duration.duration_days,
+        duration_value: duration.value,
+        duration_unit: duration.unit,
+      })
       .eq("id", data.id)
       .select(selectColumns);
 
@@ -741,7 +884,10 @@ Deno.serve(async (req) => {
     }
 
     await insertEvent(supabase, data.id, "duration_updated", actor, {
-      duration_days: durationDays,
+      duration_days: duration.duration_days,
+      duration_value: duration.value,
+      duration_unit: duration.unit,
+      duration_label: duration.label,
     });
 
     return jsonResponse({ status: "ok", item: serializeKey(updatedRows[0] as LicenseKeyRow) });
