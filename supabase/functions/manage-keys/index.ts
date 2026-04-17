@@ -44,7 +44,8 @@ type ActionRequest = {
     | "unban_key"
     | "reset_hwid"
     | "update_note"
-    | "set_duration";
+    | "set_duration"
+    | "delete_key";
   client_id?: string;
   license_key?: string;
   license_key_id?: string;
@@ -62,6 +63,13 @@ type ActionRequest = {
   description?: string;
   is_active?: boolean;
   only_active?: boolean;
+  search?: string;
+};
+
+type AdminIdentity = {
+  actor: string;
+  auth_mode: "token" | "jwt";
+  email?: string;
 };
 
 const corsHeaders = {
@@ -124,6 +132,13 @@ function normalizeClientId(value: string) {
 
 function normalizeText(value: string, maxLength = 200) {
   return value.trim().slice(0, maxLength);
+}
+
+function parseAllowedAdminEmails(raw: string | undefined) {
+  return String(raw ?? "")
+    .split(",")
+    .map((value) => value.trim().toLowerCase())
+    .filter(Boolean);
 }
 
 function isExpired(expiresAt: string | null) {
@@ -267,6 +282,47 @@ async function fetchOneKey(
   return { data, error: null };
 }
 
+async function resolveAdminIdentity(req: Request, supabaseUrl: string) {
+  const adminToken = Deno.env.get("KEYAUTH_ADMIN_TOKEN");
+  const providedAdminToken = req.headers.get("x-admin-token")?.trim();
+
+  if (adminToken && providedAdminToken && providedAdminToken === adminToken) {
+    return {
+      actor: "admin_token",
+      auth_mode: "token",
+    } satisfies AdminIdentity;
+  }
+
+  const authHeader = req.headers.get("authorization")?.trim();
+  const anonKey = Deno.env.get("SUPABASE_ANON_KEY");
+  const allowedEmails = parseAllowedAdminEmails(Deno.env.get("KEYAUTH_ADMIN_EMAILS"));
+
+  if (!authHeader || !authHeader.toLowerCase().startsWith("bearer ") || !anonKey || allowedEmails.length === 0) {
+    return null;
+  }
+
+  const authClient = createClient(supabaseUrl, anonKey, {
+    global: { headers: { Authorization: authHeader } },
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+
+  const { data, error } = await authClient.auth.getUser();
+  if (error || !data.user?.email) {
+    return null;
+  }
+
+  const normalizedEmail = data.user.email.toLowerCase();
+  if (!allowedEmails.includes(normalizedEmail)) {
+    return null;
+  }
+
+  return {
+    actor: normalizedEmail,
+    auth_mode: "jwt",
+    email: normalizedEmail,
+  } satisfies AdminIdentity;
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
@@ -276,18 +332,16 @@ Deno.serve(async (req) => {
     return jsonResponse({ status: "error", message: "Method not allowed" }, 405);
   }
 
-  const adminToken = Deno.env.get("KEYAUTH_ADMIN_TOKEN");
-  const providedAdminToken = req.headers.get("x-admin-token")?.trim();
-
-  if (!adminToken || !providedAdminToken || providedAdminToken !== adminToken) {
-    return jsonResponse({ status: "error", message: "Unauthorized" }, 401);
-  }
-
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
   const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
 
   if (!supabaseUrl || !serviceRoleKey) {
     return jsonResponse({ status: "error", message: "Server misconfigured" }, 500);
+  }
+
+  const adminIdentity = await resolveAdminIdentity(req, supabaseUrl);
+  if (!adminIdentity) {
+    return jsonResponse({ status: "error", message: "Unauthorized" }, 401);
   }
 
   const supabase = createClient(supabaseUrl, serviceRoleKey, {
@@ -303,7 +357,7 @@ Deno.serve(async (req) => {
 
   const action = payload.action;
   const clientId = normalizeClientId(String(payload.client_id ?? ""));
-  const actor = normalizeText(String(payload.actor ?? "admin"), 120);
+  const actor = normalizeText(String(payload.actor ?? adminIdentity.actor), 120) || adminIdentity.actor;
 
   if (!action) {
     return jsonResponse({ status: "error", message: "action is required" }, 400);
@@ -368,6 +422,7 @@ Deno.serve(async (req) => {
   if (action === "list_keys") {
     const limit = Math.min(Math.max(Number(payload.limit ?? 25), 1), 100);
     const offset = Math.max(Number(payload.offset ?? 0), 0);
+    const search = normalizeText(String(payload.search ?? ""), 120);
     let query = supabase
       .from("license_keys")
       .select(selectColumns, { count: "exact" })
@@ -383,6 +438,17 @@ Deno.serve(async (req) => {
       query = query.not("bound_hwid_hash", "is", null);
     } else if (payload.only_used === false) {
       query = query.is("bound_hwid_hash", null);
+    }
+
+    if (search) {
+      query = query.or(
+        [
+          `license_key.ilike.%${search}%`,
+          `note.ilike.%${search}%`,
+          `bound_user_label.ilike.%${search}%`,
+          `bound_hwid.ilike.%${search}%`,
+        ].join(","),
+      );
     }
 
     const { data, count, error } = await query.returns<LicenseKeyRow[]>();
@@ -679,6 +745,38 @@ Deno.serve(async (req) => {
     });
 
     return jsonResponse({ status: "ok", item: serializeKey(updatedRows[0] as LicenseKeyRow) });
+  }
+
+  if (action === "delete_key") {
+    const { data, error } = await fetchOneKey(
+      supabase,
+      clientId,
+      payload.license_key_id,
+      payload.license_key,
+    );
+
+    if (error) {
+      return jsonResponse({ status: "error", message: error }, 400);
+    }
+
+    if (!data) {
+      return jsonResponse({ status: "error", message: "Key not found" }, 404);
+    }
+
+    const serialized = serializeKey(data);
+    const { error: deleteError } = await supabase
+      .from("license_keys")
+      .delete()
+      .eq("id", data.id);
+
+    if (deleteError) {
+      return jsonResponse({ status: "error", message: "Failed to delete key" }, 500);
+    }
+
+    return jsonResponse({
+      status: "ok",
+      deleted: serialized,
+    });
   }
 
   return jsonResponse({ status: "error", message: "Unknown action" }, 400);

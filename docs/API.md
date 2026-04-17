@@ -76,11 +76,14 @@ Create or update a product:
 
 `POST /functions/v1/manage-keys`
 
-Required header:
+Allowed auth methods:
 
 ```http
 x-admin-token: <KEYAUTH_ADMIN_TOKEN>
+Authorization: Bearer <SUPABASE_USER_JWT>
 ```
+
+For Lovable, use Supabase Auth and the `Authorization` header. The user email must be listed in `KEYAUTH_ADMIN_EMAILS`.
 
 ### Supported Actions
 
@@ -104,6 +107,7 @@ List keys:
 {
   "action": "list_keys",
   "client_id": "YOUR_PRODUCT_ID",
+  "search": "part of key, note, hwid, or user label",
   "limit": 25,
   "offset": 0
 }
@@ -173,6 +177,17 @@ Change duration:
   "client_id": "YOUR_PRODUCT_ID",
   "license_key": "ABCDE-FGHIJ-KLMNO-PQRST",
   "duration_days": 90,
+  "actor": "owner"
+}
+```
+
+Delete a key:
+
+```json
+{
+  "action": "delete_key",
+  "client_id": "YOUR_PRODUCT_ID",
+  "license_key": "ABCDE-FGHIJ-KLMNO-PQRST",
   "actor": "owner"
 }
 ```
