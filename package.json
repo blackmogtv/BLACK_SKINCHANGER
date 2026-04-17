@@ -1,0 +1,19 @@
+{
+  "name": "license-auth-backend",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Supabase-based keyauth backend with admin key management and HWID binding.",
+  "type": "module",
+  "scripts": {
+    "supabase:start": "supabase start",
+    "supabase:stop": "supabase stop",
+    "supabase:functions:serve": "supabase functions serve validate-key --env-file .env",
+    "supabase:functions:serve:admin": "supabase functions serve manage-keys --env-file .env",
+    "supabase:db:push": "supabase db push",
+    "supabase:deploy:function": "supabase functions deploy validate-key --no-verify-jwt",
+    "supabase:deploy:function:admin": "supabase functions deploy manage-keys --no-verify-jwt"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
