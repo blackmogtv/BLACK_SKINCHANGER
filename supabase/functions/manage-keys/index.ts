@@ -35,6 +35,24 @@ type ProductRow = {
   updated_at: string;
 };
 
+type ActivityKeyRef = {
+  client_id: string;
+  license_key: string;
+  bound_hwid: string | null;
+  bound_user_label: string | null;
+  last_used_at: string | null;
+};
+
+type LicenseKeyEventRow = {
+  id: string;
+  license_key_id: string;
+  event_type: string;
+  actor: string | null;
+  details: Record<string, unknown>;
+  created_at: string;
+  license_key: ActivityKeyRef | ActivityKeyRef[] | null;
+};
+
 type DurationUnit = "hours" | "days" | "weeks" | "months" | "years";
 type DurationInputUnit = DurationUnit | "lifetime";
 
@@ -42,6 +60,7 @@ type ActionRequest = {
   action?:
     | "list_products"
     | "create_product"
+    | "list_activity"
     | "list_keys"
     | "get_key"
     | "create_keys"
@@ -120,6 +139,16 @@ const productSelectColumns = [
   "is_active",
   "created_at",
   "updated_at",
+].join(",");
+
+const activitySelectColumns = [
+  "id",
+  "license_key_id",
+  "event_type",
+  "actor",
+  "details",
+  "created_at",
+  "license_key:license_keys!inner(client_id,license_key,bound_hwid,bound_user_label,last_used_at)",
 ].join(",");
 
 const keyAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -367,6 +396,39 @@ function serializeKey(row: LicenseKeyRow) {
   };
 }
 
+function coerceActivityKeyRef(value: ActivityKeyRef | ActivityKeyRef[] | null | undefined) {
+  if (!value) {
+    return null;
+  }
+
+  return Array.isArray(value) ? (value[0] ?? null) : value;
+}
+
+function detailString(details: Record<string, unknown>, key: string) {
+  const value = details[key];
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
+function serializeActivityEvent(row: LicenseKeyEventRow) {
+  const keyRef = coerceActivityKeyRef(row.license_key);
+  const usedAt = detailString(row.details, "used_at") ?? keyRef?.last_used_at ?? null;
+
+  return {
+    id: row.id,
+    license_key_id: row.license_key_id,
+    client_id: keyRef?.client_id ?? null,
+    license_key: keyRef?.license_key ?? null,
+    event_type: row.event_type,
+    actor: row.actor ?? detailString(row.details, "user_label"),
+    created_at: row.created_at,
+    used_at: usedAt,
+    last_used_at: keyRef?.last_used_at ?? usedAt,
+    hwid: detailString(row.details, "hwid") ?? keyRef?.bound_hwid ?? null,
+    user_label: detailString(row.details, "user_label") ?? keyRef?.bound_user_label ?? null,
+    details: row.details,
+  };
+}
+
 function generateLicenseKey() {
   const random = crypto.getRandomValues(new Uint8Array(20));
   const chars = Array.from(random, (value) => keyAlphabet[value % keyAlphabet.length]);
@@ -509,7 +571,7 @@ Deno.serve(async (req) => {
     return jsonResponse({ status: "error", message: "action is required" }, 400);
   }
 
-  if (action !== "list_products" && !clientId) {
+  if (action !== "list_products" && action !== "list_activity" && !clientId) {
     return jsonResponse({ status: "error", message: "client_id is required" }, 400);
   }
 
@@ -562,6 +624,31 @@ Deno.serve(async (req) => {
     return jsonResponse({
       status: "ok",
       item: serializeProduct(data[0] as ProductRow),
+    });
+  }
+
+  if (action === "list_activity") {
+    const limit = Math.min(Math.max(Number(payload.limit ?? 100), 1), 250);
+    const offset = Math.max(Number(payload.offset ?? 0), 0);
+
+    let query = supabase
+      .from("license_key_events")
+      .select(activitySelectColumns)
+      .order("created_at", { ascending: false })
+      .range(offset, offset + limit - 1);
+
+    if (clientId) {
+      query = query.eq("license_key.client_id", clientId);
+    }
+
+    const { data, error } = await query.returns<LicenseKeyEventRow[]>();
+    if (error || !data) {
+      return jsonResponse({ status: "error", message: "Server error" }, 500);
+    }
+
+    return jsonResponse({
+      status: "ok",
+      items: data.map(serializeActivityEvent),
     });
   }
 

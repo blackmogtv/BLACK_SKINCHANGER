@@ -197,6 +197,27 @@ Change duration:
 }
 ```
 
+List recent activity across all products or one product:
+
+```json
+{
+  "action": "list_activity",
+  "limit": 100,
+  "offset": 0
+}
+```
+
+Optional product filter:
+
+```json
+{
+  "action": "list_activity",
+  "client_id": "YOUR_PRODUCT_ID",
+  "limit": 100,
+  "offset": 0
+}
+```
+
 Delete a key:
 
 ```json

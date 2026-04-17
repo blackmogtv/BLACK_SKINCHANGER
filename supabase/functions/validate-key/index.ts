@@ -268,11 +268,14 @@ Deno.serve(async (req) => {
     return jsonResponse({ status: "invalid", message: "Invalid license key" }, 200);
   }
 
+  const now = new Date().toISOString();
+
   if (row.status === "banned") {
     await insertEvent(supabase, row.id, "validation_rejected", "client", {
       reason: "banned",
       hwid,
       user_label: userLabel || null,
+      used_at: now,
     });
 
     return jsonResponse({ status: "banned", message: "This key has been banned" }, 200);
@@ -283,6 +286,7 @@ Deno.serve(async (req) => {
       reason: "expired",
       hwid,
       user_label: userLabel || null,
+      used_at: now,
     });
 
     return jsonResponse({ status: "expired", message: "This key has expired" }, 200);
@@ -293,6 +297,7 @@ Deno.serve(async (req) => {
       reason: "hwid_mismatch",
       hwid,
       user_label: userLabel || null,
+      used_at: now,
     });
 
     return jsonResponse(
@@ -300,8 +305,6 @@ Deno.serve(async (req) => {
       200,
     );
   }
-
-  const now = new Date().toISOString();
 
   if (!row.bound_hwid_hash) {
     if (!bindOnFirstUse) {
@@ -339,6 +342,8 @@ Deno.serve(async (req) => {
       await insertEvent(supabase, row.id, "bound", "client", {
         hwid,
         user_label: userLabel || null,
+        used_at: now,
+        last_used_at: boundRow.last_used_at,
       });
 
       return jsonResponse(
@@ -373,6 +378,8 @@ Deno.serve(async (req) => {
       hwid,
       user_label: userLabel || null,
       rebound: true,
+      used_at: now,
+      last_used_at: rebound.last_used_at,
     });
 
     return jsonResponse(
@@ -408,6 +415,8 @@ Deno.serve(async (req) => {
   await insertEvent(supabase, row.id, "validated", "client", {
     hwid,
     user_label: userLabel || null,
+    used_at: now,
+    last_used_at: (updatedRows[0] as LicenseKeyRow).last_used_at,
   });
 
   return jsonResponse(
